@@ -40,12 +40,13 @@ lite-speech-to-text/
   lite_speech_to_text.py
   stt_core.py
   models/
-    vosk-model-small-it-0.22/              <-- Vosk (download manuale)
+    vosk-model-small-it-0.22/              <-- Vosk (download automatico)
     models--Systran--faster-whisper-small/  <-- Whisper (download automatico)
 ```
 
-- **Whisper**: selezionare modalita' ONLINE nelle impostazioni per scaricare automaticamente in `models/`
-- **Vosk**: selezionare modalita' ONLINE per il download automatico, oppure scaricare manualmente da [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) ed estrarre in `models/`
+**Download automatico**: selezionare modalita' ONLINE nelle impostazioni al primo avvio. I modelli vengono scaricati automaticamente in `models/` (Whisper e Vosk). Una finestra di progresso mostra l'avanzamento del download.
+
+**Download manuale** (opzionale): scaricare i modelli da [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) (Vosk) o [HuggingFace](https://huggingface.co/Systran) (Whisper) ed estrarre in `models/`
 
 ## Utilizzo
 

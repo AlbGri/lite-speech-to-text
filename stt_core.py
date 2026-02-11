@@ -296,8 +296,57 @@ class STTEngine:
         self.on_status: Callable[[str], None] = lambda s: None
         self.on_result: Callable[[str, float], None] = lambda t, d: None
         self.on_error: Callable[[str], None] = lambda e: None
+        self.on_load_progress: Callable[[str], None] = lambda m: None
+
+        # Stream audio persistente (aperto dopo load_model)
+        self.p: pyaudio.PyAudio | None = None
+        self.stream = None
+
+    def load_model(self) -> None:
+        """Carica il modello STT selezionato e apre lo stream audio."""
+        if self.engine_type in ("whisper_small", "whisper_turbo"):
+            from faster_whisper import WhisperModel
+            models_dir = get_models_dir()
+            models_dir.mkdir(exist_ok=True)
+            local_path = find_whisper_model(self.model_name)
+
+            # large-v3-turbo richiede 128 mel-filters
+            model_kwargs = {
+                "device": "auto",
+                "compute_type": "auto",
+                "num_workers": 1,
+            }
+            if self.engine_type == "whisper_turbo":
+                model_kwargs["feature_size"] = 128
+
+            if local_path:
+                self.on_load_progress("Caricamento modello Whisper...")
+                self.model = WhisperModel(local_path, **model_kwargs)
+            else:
+                self.on_load_progress(f"Download modello {self.model_name}...")
+                self.model = WhisperModel(
+                    self.model_name,
+                    download_root=str(models_dir),
+                    local_files_only=not self.allow_internet,
+                    **model_kwargs,
+                )
+                self.on_load_progress("Modello Whisper scaricato")
+        elif self.engine_type == "vosk":
+            import vosk
+            model_path = find_vosk_model(self.lang_code)
+            if not model_path and self.allow_internet:
+                self.on_load_progress(f"Download modello Vosk {self.lang_code}...")
+                model_path = download_vosk_model(self.lang_code)
+                self.on_load_progress("Modello Vosk scaricato")
+            if not model_path:
+                raise FileNotFoundError(
+                    f"Modello Vosk per '{self.lang_code}' non trovato. "
+                    "Scarica da: https://alphacephei.com/vosk/models")
+            self.on_load_progress("Caricamento modello Vosk...")
+            self.vosk_model = vosk.Model(model_path)
 
         # Stream audio persistente (evita hook timeout Windows)
+        self.on_load_progress("Apertura stream audio...")
         self.p = pyaudio.PyAudio()
         self.stream = self.p.open(
             format=AUDIO_FORMAT,
@@ -307,40 +356,7 @@ class STTEngine:
             input_device_index=self.device_index,
             frames_per_buffer=AUDIO_CHUNK,
         )
-
-    def load_model(self) -> None:
-        """Carica il modello STT selezionato."""
-        if self.engine_type in ("whisper_small", "whisper_turbo"):
-            from faster_whisper import WhisperModel
-            models_dir = get_models_dir()
-            models_dir.mkdir(exist_ok=True)
-            local_path = find_whisper_model(self.model_name)
-            if local_path:
-                self.model = WhisperModel(
-                    local_path,
-                    device="auto",
-                    compute_type="auto",
-                    num_workers=1,
-                )
-            else:
-                self.model = WhisperModel(
-                    self.model_name,
-                    device="auto",
-                    compute_type="auto",
-                    num_workers=1,
-                    download_root=str(models_dir),
-                    local_files_only=not self.allow_internet,
-                )
-        elif self.engine_type == "vosk":
-            import vosk
-            model_path = find_vosk_model(self.lang_code)
-            if not model_path and self.allow_internet:
-                model_path = download_vosk_model(self.lang_code)
-            if not model_path:
-                raise FileNotFoundError(
-                    f"Modello Vosk per '{self.lang_code}' non trovato. "
-                    "Scarica da: https://alphacephei.com/vosk/models")
-            self.vosk_model = vosk.Model(model_path)
+        self.on_load_progress("Pronto")
 
     def start_recording(self) -> None:
         """Avvia registrazione audio."""

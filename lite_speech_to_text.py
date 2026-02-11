@@ -13,7 +13,7 @@ from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QGroupBox, QHBoxLayout,
     QMessageBox, QPushButton, QRadioButton, QSystemTrayIcon, QMenu,
-    QVBoxLayout,
+    QVBoxLayout, QProgressDialog,
 )
 from pynput import keyboard
 
@@ -81,6 +81,7 @@ class ModelLoaderThread(QThread):
     """Thread per caricamento modello senza bloccare la UI."""
     finished = pyqtSignal()
     error = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
     def __init__(self, engine: STTEngine) -> None:
         super().__init__()
@@ -88,6 +89,8 @@ class ModelLoaderThread(QThread):
 
     def run(self) -> None:
         try:
+            # Collega callback progresso
+            self.engine.on_load_progress = self.progress.emit
             self.engine.load_model()
             self.finished.emit()
         except Exception as e:
@@ -316,16 +319,34 @@ class TrayApp(QObject):
         self.engine.on_result = self._bridge.result_ready.emit
         self.engine.on_error = self._bridge.error_occurred.emit
 
+        # Progress dialog per download modelli
+        self._progress_dialog = QProgressDialog(
+            "Caricamento modello...", None, 0, 0)
+        self._progress_dialog.setWindowTitle("Lite Speech-to-Text")
+        self._progress_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._progress_dialog.setCancelButton(None)
+        self._progress_dialog.setMinimumDuration(0)
+        self._progress_dialog.show()
+
         self._loader = ModelLoaderThread(self.engine)
         self._loader.finished.connect(self._on_model_loaded)
         self._loader.error.connect(self._on_model_error)
+        self._loader.progress.connect(self._on_load_progress)
         self._loader.start()
 
+    def _on_load_progress(self, message: str) -> None:
+        if hasattr(self, "_progress_dialog"):
+            self._progress_dialog.setLabelText(message)
+
     def _on_model_loaded(self) -> None:
+        if hasattr(self, "_progress_dialog"):
+            self._progress_dialog.close()
         self._set_status("ready", "Pronto")
         self._start_listener()
 
     def _on_model_error(self, error: str) -> None:
+        if hasattr(self, "_progress_dialog"):
+            self._progress_dialog.close()
         self._set_status("loading", "Errore")
         self.tray.showMessage(
             "Errore caricamento",
