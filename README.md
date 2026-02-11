@@ -16,8 +16,6 @@ Tieni premuto **CTRL sinistro** per registrare, rilascia per trascrivere. Il tes
 
 Italiano, English, Espanol, Francais, Deutsch, Portugues.
 
-Per Vosk, scaricare il modello corrispondente da [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) e posizionarlo nella cartella del progetto (o in `models/`).
-
 ## Setup
 
 ```bash
@@ -29,17 +27,22 @@ pip install -r requirements.txt
 ### Requisiti di sistema
 
 - **Vosk (CPU)**: qualsiasi CPU, ~2GB RAM
-- **Whisper (GPU)**: NVIDIA con CUDA, ~8GB RAM, CUDA Toolkit installato
+- **Whisper (GPU)**: NVIDIA con CUDA, CUDA Toolkit installato
 
-### Modello Vosk
+### Modelli
 
-Scaricare ed estrarre il modello nella cartella del progetto:
+Tutti i modelli vanno nella cartella `models/`:
 
 ```
 lite-speech-to-text/
   lite_speech_to_text.py
-  vosk-model-small-it-0.22/   <-- esempio per italiano
+  models/
+    vosk-model-small-it-0.22/           <-- Vosk (download manuale)
+    models--Systran--faster-whisper-small/  <-- Whisper (download automatico)
 ```
+
+- **Whisper**: avviare in modalita' ONLINE per scaricare automaticamente in `models/`
+- **Vosk**: scaricare manualmente da [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) ed estrarre in `models/`
 
 ## Utilizzo
 
@@ -61,7 +64,7 @@ pip install pyinstaller
 pyinstaller LiteSpeechToText.spec --noconfirm
 ```
 
-L'eseguibile viene creato in `dist/LiteSpeechToText/`. Il modello Vosk va posizionato nella stessa cartella dell'exe.
+L'eseguibile viene creato in `dist/LiteSpeechToText/`. I modelli vanno nella cartella `models/` accanto all'exe.
 
 Distribuzione:
 
