@@ -29,5 +29,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Config utente
+config.json
+
 # Archivi modelli
 *.zip

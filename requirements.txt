@@ -4,3 +4,4 @@ faster-whisper>=1.0.0
 vosk>=0.3.45
 pynput>=1.7.6
 pyperclip>=1.8.2
+PyQt6>=6.5.0

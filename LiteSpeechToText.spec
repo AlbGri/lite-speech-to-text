@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec per Lite Speech-to-Text
 # Build: pyinstaller LiteSpeechToText.spec --noconfirm
-# Nota: il modello Vosk va posizionato nella stessa cartella dell'exe
+# Nota: i modelli vanno nella cartella models/ accanto all'exe
 
 import os
 import sys
@@ -19,7 +19,7 @@ if conda_env:
             binaries.append((str(dll_path), "."))
 
 a = Analysis(
-    ["lite_speech_to_text.py"],
+    ["lite_speech_to_text.py", "stt_core.py"],
     pathex=[],
     binaries=binaries,
     datas=[],
@@ -31,13 +31,17 @@ a = Analysis(
         "pynput.keyboard._win32",
         "pyperclip",
         "vosk",
+        "stt_core",
+        "PyQt6",
+        "PyQt6.QtCore",
+        "PyQt6.QtGui",
+        "PyQt6.QtWidgets",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         "matplotlib",
-        "tkinter",
         "PIL",
         "scipy",
         "pandas",
@@ -58,7 +62,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

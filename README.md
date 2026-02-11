@@ -2,7 +2,9 @@
 
 Trascrizione vocale in tempo reale con supporto multi-engine e multi-lingua.
 
-Tieni premuto **CTRL sinistro** per registrare, rilascia per trascrivere. Il testo viene copiato in clipboard e incollato automaticamente.
+Applicazione system tray: tieni premuto **CTRL sinistro** per registrare, rilascia per trascrivere. Il testo viene copiato in clipboard e incollato automaticamente.
+
+![Impostazioni](docs/screenshot.png)
 
 ## Engines
 
@@ -36,13 +38,14 @@ Tutti i modelli vanno nella cartella `models/`:
 ```
 lite-speech-to-text/
   lite_speech_to_text.py
+  stt_core.py
   models/
-    vosk-model-small-it-0.22/           <-- Vosk (download manuale)
+    vosk-model-small-it-0.22/              <-- Vosk (download manuale)
     models--Systran--faster-whisper-small/  <-- Whisper (download automatico)
 ```
 
-- **Whisper**: avviare in modalita' ONLINE per scaricare automaticamente in `models/`
-- **Vosk**: scaricare manualmente da [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) ed estrarre in `models/`
+- **Whisper**: selezionare modalita' ONLINE nelle impostazioni per scaricare automaticamente in `models/`
+- **Vosk**: selezionare modalita' ONLINE per il download automatico, oppure scaricare manualmente da [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) ed estrarre in `models/`
 
 ## Utilizzo
 
@@ -51,11 +54,28 @@ conda activate speech-to-text
 python lite_speech_to_text.py
 ```
 
+L'applicazione parte nel system tray (icona accanto all'orologio). Al primo avvio si apre la finestra impostazioni per configurare microfono, lingua e engine. Le impostazioni vengono salvate in `config.json`.
+
 ### Controlli
 
 - **CTRL sinistro** (tenere premuto): registra
 - **CTRL sinistro** (rilasciare): trascrive e incolla
-- **ESC x2** (entro 2 secondi): esci
+- **Click destro** sull'icona tray: menu (impostazioni, esci)
+
+### Icona tray
+
+- Verde: pronto
+- Rosso: registrazione in corso
+- Giallo: elaborazione in corso
+- Grigio: caricamento modello
+
+## Struttura
+
+| File | Descrizione |
+|------|-------------|
+| `lite_speech_to_text.py` | UI PyQt6: system tray, impostazioni, entry point |
+| `stt_core.py` | Logica core: audio, trascrizione, modelli |
+| `config.json` | Impostazioni utente (generato automaticamente) |
 
 ## Build eseguibile
 
