@@ -51,18 +51,21 @@ ENGINE_INFO = {
     "whisper_small": {
         "name": "WHISPER SMALL",
         "model": "small",
+        "size": "~460 MB",
         "desc": "1-2s, GPU",
         "device": "GPU CUDA",
     },
     "whisper_turbo": {
         "name": "WHISPER TURBO",
         "model": "large-v3-turbo",
+        "size": "~1.6 GB",
         "desc": "3-5s, GPU, massima accuratezza (raccomandato)",
         "device": "GPU CUDA",
     },
     "vosk": {
         "name": "VOSK",
         "model": None,
+        "size": "~50 MB",
         "desc": "0.5-1.7s, CPU",
         "device": "CPU",
     },
@@ -94,6 +97,7 @@ def detect_cpu_config() -> tuple[int, bool]:
 
 def setup_environment(allow_internet: bool, threads: int) -> None:
     """Configura variabili d'ambiente per offline mode e threading."""
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
     if not allow_internet:
         for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
                     "HF_DATASETS_OFFLINE", "TOKENIZERS_OFFLINE",
@@ -219,12 +223,11 @@ def find_vosk_model(lang_code: str) -> str | None:
     return None
 
 
-def download_vosk_model(lang_code: str) -> str:
-    """Scarica modello Vosk per la lingua, estrae in models/, rimuove zip.
-
-    Returns:
-        Path della directory del modello estratto.
-    """
+def download_vosk_model(
+    lang_code: str,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
+    """Scarica modello Vosk per la lingua, estrae in models/, rimuove zip."""
     url = VOSK_MODEL_URLS.get(lang_code)
     if not url:
         raise ValueError(f"Nessun modello Vosk disponibile per '{lang_code}'")
@@ -234,10 +237,20 @@ def download_vosk_model(lang_code: str) -> str:
     zip_name = url.split("/")[-1]
     zip_path = models_dir / zip_name
 
-    log.info("Download modello Vosk da %s...", url)
-    urllib.request.urlretrieve(url, zip_path)
+    def reporthook(count: int, block_size: int, total_size: int) -> None:
+        if not progress_callback or total_size <= 0:
+            return
+        mb_done = min(count * block_size, total_size) / 1048576
+        mb_total = total_size / 1048576
+        pct = min(count * block_size * 100 / total_size, 100)
+        progress_callback(
+            f"Download Vosk: {mb_done:.0f}/{mb_total:.0f} MB ({pct:.0f}%)")
 
-    log.info("Estrazione in %s...", models_dir)
+    log.info("Download modello Vosk da %s...", url)
+    urllib.request.urlretrieve(url, zip_path, reporthook=reporthook)
+
+    if progress_callback:
+        progress_callback("Estrazione modello Vosk...")
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(models_dir)
 
@@ -305,45 +318,9 @@ class STTEngine:
     def load_model(self) -> None:
         """Carica il modello STT selezionato e apre lo stream audio."""
         if self.engine_type in ("whisper_small", "whisper_turbo"):
-            from faster_whisper import WhisperModel
-            models_dir = get_models_dir()
-            models_dir.mkdir(exist_ok=True)
-            local_path = find_whisper_model(self.model_name)
-
-            # large-v3-turbo richiede 128 mel-filters
-            model_kwargs = {
-                "device": "auto",
-                "compute_type": "auto",
-                "num_workers": 1,
-            }
-            if self.engine_type == "whisper_turbo":
-                model_kwargs["feature_size"] = 128
-
-            if local_path:
-                self.on_load_progress("Caricamento modello Whisper...")
-                self.model = WhisperModel(local_path, **model_kwargs)
-            else:
-                self.on_load_progress(f"Download modello {self.model_name}...")
-                self.model = WhisperModel(
-                    self.model_name,
-                    download_root=str(models_dir),
-                    local_files_only=not self.allow_internet,
-                    **model_kwargs,
-                )
-                self.on_load_progress("Modello Whisper scaricato")
+            self._load_whisper()
         elif self.engine_type == "vosk":
-            import vosk
-            model_path = find_vosk_model(self.lang_code)
-            if not model_path and self.allow_internet:
-                self.on_load_progress(f"Download modello Vosk {self.lang_code}...")
-                model_path = download_vosk_model(self.lang_code)
-                self.on_load_progress("Modello Vosk scaricato")
-            if not model_path:
-                raise FileNotFoundError(
-                    f"Modello Vosk per '{self.lang_code}' non trovato. "
-                    "Scarica da: https://alphacephei.com/vosk/models")
-            self.on_load_progress("Caricamento modello Vosk...")
-            self.vosk_model = vosk.Model(model_path)
+            self._load_vosk()
 
         # Stream audio persistente (evita hook timeout Windows)
         self.on_load_progress("Apertura stream audio...")
@@ -357,6 +334,64 @@ class STTEngine:
             frames_per_buffer=AUDIO_CHUNK,
         )
         self.on_load_progress("Pronto")
+
+    def _load_whisper(self) -> None:
+        """Scarica (se necessario) e carica modello Whisper."""
+        from faster_whisper import WhisperModel
+        models_dir = get_models_dir()
+        models_dir.mkdir(exist_ok=True)
+        local_path = find_whisper_model(self.model_name)
+        size = ENGINE_INFO[self.engine_type]["size"]
+
+        if local_path:
+            self.on_load_progress(f"Caricamento Whisper ({size})...")
+            log.info("Caricamento Whisper da: %s", local_path)
+            self.model = WhisperModel(
+                local_path,
+                device="auto",
+                compute_type="auto",
+                num_workers=1,
+            )
+        else:
+            if not self.allow_internet:
+                raise FileNotFoundError(
+                    f"Modello Whisper '{self.model_name}' non trovato. "
+                    "Seleziona modalita' ONLINE per il download.")
+            self.on_load_progress(f"Download Whisper ({size})...")
+            log.info("Download + caricamento Whisper '%s'...",
+                     self.model_name)
+            self.model = WhisperModel(
+                self.model_name,
+                device="auto",
+                compute_type="auto",
+                num_workers=1,
+                download_root=str(models_dir),
+            )
+        log.info("Modello Whisper caricato")
+
+        # Fix mel bins per turbo (deve essere 128, non 80)
+        if self.engine_type == "whisper_turbo":
+            mel_bins = self.model.feature_extractor.mel_filters.shape[0]
+            if mel_bins != 128:
+                from faster_whisper.feature_extractor import FeatureExtractor
+                self.model.feature_extractor = FeatureExtractor(
+                    feature_size=128)
+                log.info("Mel bins corretto da %d a 128 per turbo", mel_bins)
+
+    def _load_vosk(self) -> None:
+        """Scarica (se necessario) e carica modello Vosk."""
+        import vosk
+        model_path = find_vosk_model(self.lang_code)
+        if not model_path and self.allow_internet:
+            model_path = download_vosk_model(
+                self.lang_code,
+                progress_callback=self.on_load_progress)
+        if not model_path:
+            raise FileNotFoundError(
+                f"Modello Vosk per '{self.lang_code}' non trovato. "
+                "Scarica da: https://alphacephei.com/vosk/models")
+        self.on_load_progress("Caricamento modello Vosk...")
+        self.vosk_model = vosk.Model(model_path)
 
     def start_recording(self) -> None:
         """Avvia registrazione audio."""
@@ -507,8 +542,11 @@ class STTEngine:
             self._pasting = False
 
     def close(self) -> None:
-        """Rilascia risorse audio."""
+        """Rilascia risorse audio e modello GPU."""
         self.is_recording = False
+        # Rilascia modello per liberare VRAM
+        self.model = None
+        self.vosk_model = None
         try:
             if self.stream:
                 self.stream.stop_stream()

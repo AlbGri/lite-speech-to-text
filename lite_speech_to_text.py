@@ -6,9 +6,10 @@ import logging
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QGroupBox, QHBoxLayout,
@@ -77,24 +78,15 @@ class SignalBridge(QObject):
     error_occurred = pyqtSignal(str)
 
 
-class ModelLoaderThread(QThread):
-    """Thread per caricamento modello senza bloccare la UI."""
+class ModelLoaderSignals(QObject):
+    """Segnali thread-safe per il caricamento modello.
+
+    Usa threading.Thread invece di QThread per evitare problemi
+    di inizializzazione CUDA/CTranslate2 dal contesto QThread.
+    """
     finished = pyqtSignal()
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
-
-    def __init__(self, engine: STTEngine) -> None:
-        super().__init__()
-        self.engine = engine
-
-    def run(self) -> None:
-        try:
-            # Collega callback progresso
-            self.engine.on_load_progress = self.progress.emit
-            self.engine.load_model()
-            self.finished.emit()
-        except Exception as e:
-            self.error.emit(str(e))
 
 
 # --- Finestra Impostazioni ---
@@ -254,7 +246,7 @@ class TrayApp(QObject):
         super().__init__()
         self.engine: STTEngine | None = None
         self.listener: keyboard.Listener | None = None
-        self._loader: ModelLoaderThread | None = None
+        self._loader: threading.Thread | None = None
 
         # Bridge segnali thread-safe
         self._bridge = SignalBridge()
@@ -328,10 +320,21 @@ class TrayApp(QObject):
         self._progress_dialog.setMinimumDuration(0)
         self._progress_dialog.show()
 
-        self._loader = ModelLoaderThread(self.engine)
-        self._loader.finished.connect(self._on_model_loaded)
-        self._loader.error.connect(self._on_model_error)
-        self._loader.progress.connect(self._on_load_progress)
+        self._loader_signals = ModelLoaderSignals()
+        self._loader_signals.finished.connect(self._on_model_loaded)
+        self._loader_signals.error.connect(self._on_model_error)
+        self._loader_signals.progress.connect(self._on_load_progress)
+
+        def _load_model_target() -> None:
+            try:
+                self.engine.on_load_progress = self._loader_signals.progress.emit
+                self.engine.load_model()
+                self._loader_signals.finished.emit()
+            except Exception as e:
+                self._loader_signals.error.emit(str(e))
+
+        self._loader = threading.Thread(
+            target=_load_model_target, daemon=True)
         self._loader.start()
 
     def _on_load_progress(self, message: str) -> None:
