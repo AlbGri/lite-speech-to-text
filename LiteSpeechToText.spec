@@ -18,11 +18,23 @@ if conda_env:
         if dll_path.exists():
             binaries.append((str(dll_path), "."))
 
+# DLL native di vosk
+import vosk as _vosk
+_vosk_dir = os.path.dirname(_vosk.__file__)
+for _dll in ("libvosk.dll", "libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll"):
+    _dll_path = os.path.join(_vosk_dir, _dll)
+    if os.path.exists(_dll_path):
+        binaries.append((_dll_path, "vosk"))
+
+# onnxruntime: raccolta completa (DLL native + dati, richiesto da VAD filter)
+from PyInstaller.utils.hooks import collect_all
+ort_datas, ort_binaries, ort_hiddenimports = collect_all("onnxruntime")
+
 a = Analysis(
     ["lite_speech_to_text.py", "stt_core.py"],
     pathex=[],
-    binaries=binaries,
-    datas=[],
+    binaries=binaries + ort_binaries,
+    datas=ort_datas,
     hiddenimports=[
         "pyaudio",
         "numpy",
@@ -38,14 +50,13 @@ a = Analysis(
         "PyQt6.QtWidgets",
         "faster_whisper",
         "ctranslate2",
-    ],
+    ] + ort_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
         "matplotlib",
         "PIL",
-        "scipy",
         "pandas",
     ],
     noarchive=False,

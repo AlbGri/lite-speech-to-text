@@ -472,12 +472,17 @@ class STTEngine:
     def _transcribe_whisper(self, audio_float: np.ndarray) -> str:
         """Trascrizione con Whisper."""
         beam = 5 if self.engine_type == "whisper_turbo" else 1
+        try:
+            import onnxruntime  # noqa: F401
+            use_vad = True
+        except ImportError:
+            use_vad = False
         segments, _ = self.model.transcribe(
             audio_float,
             language=self.lang_code,
             beam_size=beam,
             temperature=0.0,
-            vad_filter=True,
+            vad_filter=use_vad,
             condition_on_previous_text=False,
             word_timestamps=False,
             no_speech_threshold=0.6,
