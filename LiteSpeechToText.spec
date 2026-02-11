@@ -36,6 +36,8 @@ a = Analysis(
         "PyQt6.QtCore",
         "PyQt6.QtGui",
         "PyQt6.QtWidgets",
+        "faster_whisper",
+        "ctranslate2",
     ],
     hookspath=[],
     hooksconfig={},
