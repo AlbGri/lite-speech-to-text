@@ -9,7 +9,7 @@ Tieni premuto **CTRL sinistro** per registrare, rilascia per trascrivere. Il tes
 | Engine | Device | Tempo | Note |
 |--------|--------|-------|------|
 | Whisper Small | GPU CUDA | 1-2s | Buon compromesso velocita'/accuratezza |
-| Whisper Medium | GPU CUDA | 6-7s | Massima accuratezza |
+| Whisper Turbo | GPU CUDA | 3-5s | Massima accuratezza (large-v3-turbo, raccomandato) |
 | Vosk | CPU | 0.5-1.7s | Leggero, completamente offline |
 
 ## Lingue supportate

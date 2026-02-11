@@ -29,11 +29,13 @@ SUPPORTED_LANGUAGES = {
     "pt": "Portugues",
 }
 
-AUDIO_CHUNK = 32768
+AUDIO_CHUNK = 4096
 AUDIO_FORMAT = pyaudio.paInt16
 AUDIO_CHANNELS = 1
 AUDIO_RATE = 16000
 MIN_RECORDING_DURATION = 0.3
+MIC_TEST_DURATION = 1.5
+MIC_TEST_THRESHOLD = 0.005
 
 
 @contextmanager
@@ -144,6 +146,9 @@ class LiteSpeechToText:
             log.info("Hardware: %d threads", self.threads)
         print()
 
+        # Microfono
+        self.device_index = self._select_microphone()
+
         # Lingua
         self.lang_code = self._choose_language()
 
@@ -156,17 +161,117 @@ class LiteSpeechToText:
         self.engine_name: str = ""
         self.expected_time: str = ""
         self.device_info: str = ""
-        self.p: pyaudio.PyAudio | None = None
-        self.stream: pyaudio.Stream | None = None
         self.start_time: float = 0.0
         self.keyboard_controller = keyboard.Controller()
         self.esc_press_count = 0
         self.last_esc_press: float = 0.0
+        self._pasting = False
+        self._processing = False
+
+        # Stream audio persistente (evita hook timeout Windows)
+        self.p = pyaudio.PyAudio()
+        self.stream = self.p.open(
+            format=AUDIO_FORMAT,
+            channels=AUDIO_CHANNELS,
+            rate=AUDIO_RATE,
+            input=True,
+            input_device_index=self.device_index,
+            frames_per_buffer=AUDIO_CHUNK,
+        )
 
         # Inizializzazione engine
         self._check_engines_and_choose()
         self._load_model()
         self._show_ready_message()
+
+    def _select_microphone(self) -> int:
+        """Elenca dispositivi di input audio (WASAPI), permette selezione e test."""
+        log.info("MICROFONO:")
+        log.info("-" * 25)
+
+        p = pyaudio.PyAudio()
+        try:
+            # Cerca host API WASAPI (migliore qualita'/latenza su Windows)
+            wasapi_index = None
+            for i in range(p.get_host_api_count()):
+                api_info = p.get_host_api_info_by_index(i)
+                if "wasapi" in api_info["name"].lower():
+                    wasapi_index = i
+                    break
+
+            devices: list[tuple[int, str]] = []
+            for i in range(p.get_device_count()):
+                info = p.get_device_info_by_index(i)
+                if info["maxInputChannels"] <= 0:
+                    continue
+                # Filtra per WASAPI se disponibile, altrimenti mostra tutti
+                if wasapi_index is not None and info["hostApi"] != wasapi_index:
+                    continue
+                devices.append((i, info["name"]))
+
+            if not devices:
+                log.error("Nessun dispositivo di input trovato")
+                sys.exit(1)
+
+            for idx, (_, name) in enumerate(devices):
+                log.info("  %d. %s", idx + 1, name)
+            print()
+
+            while True:
+                choice = input(
+                    f"Scegli microfono (1-{len(devices)}) [1]: "
+                ).strip() or "1"
+                try:
+                    sel = int(choice) - 1
+                    if 0 <= sel < len(devices):
+                        break
+                except ValueError:
+                    pass
+                log.warning("Scelta non valida")
+
+            device_index, device_name = devices[sel]
+            log.info("Microfono: [%d] %s", device_index, device_name)
+            print()
+
+            # Test microfono
+            log.info("Test microfono (parla per %.1f secondi)...",
+                     MIC_TEST_DURATION)
+            try:
+                stream = p.open(
+                    format=AUDIO_FORMAT,
+                    channels=AUDIO_CHANNELS,
+                    rate=AUDIO_RATE,
+                    input=True,
+                    input_device_index=device_index,
+                    frames_per_buffer=AUDIO_CHUNK,
+                )
+                frames = []
+                chunks_needed = int(
+                    AUDIO_RATE * MIC_TEST_DURATION / AUDIO_CHUNK) + 1
+                for _ in range(chunks_needed):
+                    data = stream.read(AUDIO_CHUNK, exception_on_overflow=False)
+                    frames.append(data)
+                stream.stop_stream()
+                stream.close()
+
+                audio = np.frombuffer(b"".join(frames), dtype=np.int16)
+                amplitude = np.abs(audio).mean() / 32768.0
+
+                if amplitude < MIC_TEST_THRESHOLD:
+                    log.warning(
+                        "Segnale molto basso (%.4f). "
+                        "Verifica che il microfono sia attivo.", amplitude)
+                else:
+                    log.info("Microfono OK (livello: %.4f)", amplitude)
+            except OSError as e:
+                log.error("Errore apertura microfono [%d]: %s",
+                          device_index, e)
+                sys.exit(1)
+
+            print()
+            return device_index
+        finally:
+            p.terminate()
 
     def _choose_language(self) -> str:
         """Selezione lingua per la trascrizione."""
@@ -186,24 +291,33 @@ class LiteSpeechToText:
         log.info("ENGINES DISPONIBILI:")
         log.info("-" * 25)
 
-        whisper_available = self._check_whisper()
+        has_whisper_lib = self._check_whisper_lib()
+        whisper_small = has_whisper_lib and (
+            self._find_whisper_model("small") is not None or self.allow_internet)
+        whisper_turbo = has_whisper_lib and (
+            self._find_whisper_model("large-v3-turbo") is not None
+            or self.allow_internet)
         vosk_available = self._check_vosk()
 
-        log.info("Whisper: %s",
-                 "disponibile" if whisper_available else "non trovato")
+        log.info("Whisper Small: %s",
+                 "disponibile" if whisper_small else "non trovato")
+        log.info("Whisper Turbo: %s",
+                 "disponibile" if whisper_turbo else "non trovato")
         log.info("Vosk: %s",
                  "disponibile" if vosk_available else "non trovato")
         print()
 
         options: list[tuple[str, str, str, str]] = []
-        if whisper_available:
-            options.append(("1", "WHISPER SMALL", "whisper_small",
-                            "1-2s, GPU"))
-            options.append(("2", "WHISPER MEDIUM", "whisper_medium",
-                            "6-7s, GPU, piu' accurato"))
+        if whisper_small:
+            options.append((str(len(options) + 1), "WHISPER SMALL",
+                            "whisper_small", "1-2s, GPU"))
+        if whisper_turbo:
+            options.append((str(len(options) + 1), "WHISPER TURBO",
+                            "whisper_turbo",
+                            "3-5s, GPU, massima accuratezza (raccomandato)"))
         if vosk_available:
-            idx = str(len(options) + 1)
-            options.append((idx, "VOSK", "vosk", "0.5-1.7s, CPU"))
+            options.append((str(len(options) + 1), "VOSK", "vosk",
+                            "0.5-1.7s, CPU"))
 
         if not options:
             log.error("Nessun engine disponibile. "
@@ -224,33 +338,52 @@ class LiteSpeechToText:
                 self._setup_engine_params()
                 return
 
-    def _check_whisper(self) -> bool:
-        """Controlla se faster-whisper e' disponibile."""
+    def _check_whisper_lib(self) -> bool:
+        """Controlla se la libreria faster-whisper e' installata."""
         try:
             import faster_whisper  # noqa: F401
-            return (self._find_whisper_model("small")
-                    or self._find_whisper_model("medium")
-                    or self.allow_internet)
+            return True
         except ImportError:
             return False
 
-    def _find_whisper_model(self, model_name: str) -> bool:
-        """Controlla se un modello Whisper e' in cache locale."""
-        cache_dirs = [
-            Path.home() / ".cache" / "huggingface" / "hub",
-            Path.home() / "AppData" / "Local" / "huggingface" / "hub",
-        ]
-        for cache_dir in cache_dirs:
-            if not cache_dir.exists():
-                continue
-            try:
-                for item in cache_dir.iterdir():
-                    if ("whisper" in item.name.lower()
-                            and model_name in item.name.lower()):
-                        return True
-            except OSError:
-                continue
-        return False
+    def _get_models_dir(self) -> Path:
+        """Restituisce la cartella models/ del progetto."""
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+        else:
+            base = Path(__file__).resolve().parent
+        return base / "models"
+
+    def _find_whisper_model(self, model_name: str) -> str | None:
+        """Cerca modello Whisper in models/.
+
+        Naviga la struttura HuggingFace cache creata da download_root
+        per trovare la directory con i file del modello.
+
+        Returns:
+            Path della directory del modello, None se non trovato.
+        """
+        models_dir = self._get_models_dir()
+        if not models_dir.exists():
+            return None
+        try:
+            for item in models_dir.iterdir():
+                if not (item.is_dir()
+                        and "whisper" in item.name.lower()
+                        and model_name in item.name.lower()):
+                    continue
+                # Struttura HuggingFace cache: item/snapshots/<hash>/
+                snapshots = item / "snapshots"
+                if snapshots.exists():
+                    for snap in sorted(snapshots.iterdir(), reverse=True):
+                        if snap.is_dir() and (snap / "model.bin").exists():
+                            return str(snap)
+                # Directory con file modello diretto
+                if (item / "model.bin").exists():
+                    return str(item)
+        except OSError:
+            pass
+        return None
 
     def _check_vosk(self) -> bool:
         """Controlla se vosk e' disponibile."""
@@ -266,9 +399,9 @@ class LiteSpeechToText:
             self.model_name = "small"
             self.expected_time = "1-2 secondi"
             self.device_info = "GPU CUDA"
-        elif self.engine_type == "whisper_medium":
-            self.model_name = "medium"
-            self.expected_time = "6-7 secondi"
+        elif self.engine_type == "whisper_turbo":
+            self.model_name = "large-v3-turbo"
+            self.expected_time = "3-5 secondi"
             self.device_info = "GPU CUDA"
         elif self.engine_type == "vosk":
             self.expected_time = "0.5-1.7 secondi"
@@ -279,15 +412,27 @@ class LiteSpeechToText:
         log.info("Caricamento %s...", self.engine_name)
 
         try:
-            if self.engine_type in ("whisper_small", "whisper_medium"):
+            if self.engine_type in ("whisper_small", "whisper_turbo"):
                 from faster_whisper import WhisperModel
-                self.model = WhisperModel(
-                    self.model_name,
-                    device="cuda",
-                    compute_type="float32",
-                    num_workers=1,
-                    local_files_only=not self.allow_internet,
-                )
+                models_dir = self._get_models_dir()
+                models_dir.mkdir(exist_ok=True)
+                local_path = self._find_whisper_model(self.model_name)
+                if local_path:
+                    self.model = WhisperModel(
+                        local_path,
+                        device="auto",
+                        compute_type="auto",
+                        num_workers=1,
+                    )
+                else:
+                    self.model = WhisperModel(
+                        self.model_name,
+                        device="auto",
+                        compute_type="auto",
+                        num_workers=1,
+                        download_root=str(models_dir),
+                        local_files_only=not self.allow_internet,
+                    )
             elif self.engine_type == "vosk":
                 import vosk
                 model_path = find_vosk_model(self.lang_code)
@@ -319,6 +464,7 @@ class LiteSpeechToText:
         log.info("  ESC x2 = Esci")
         print()
         log.info("CONFIGURAZIONE:")
+        log.info("  Microfono: [%d]", self.device_index)
         log.info("  Internet: %s",
                  "abilitato" if self.allow_internet else "disabilitato")
         log.info("  Engine: %s", self.engine_name)
@@ -333,7 +479,7 @@ class LiteSpeechToText:
 
     def transcribe_audio(self, audio_float: np.ndarray) -> str:
         """Trascrive audio usando l'engine selezionato."""
-        if self.engine_type in ("whisper_small", "whisper_medium"):
+        if self.engine_type in ("whisper_small", "whisper_turbo"):
             return self._transcribe_whisper(audio_float)
         if self.engine_type == "vosk":
             return self._transcribe_vosk(audio_float)
@@ -341,16 +487,16 @@ class LiteSpeechToText:
 
     def _transcribe_whisper(self, audio_float: np.ndarray) -> str:
         """Trascrizione con Whisper."""
-        no_speech = 0.6 if self.engine_type == "whisper_medium" else 0.9
+        beam = 5 if self.engine_type == "whisper_turbo" else 1
         segments, _ = self.model.transcribe(
             audio_float,
             language=self.lang_code,
-            beam_size=1,
+            beam_size=beam,
             temperature=0.0,
-            vad_filter=False,
+            vad_filter=True,
             condition_on_previous_text=False,
             word_timestamps=False,
-            no_speech_threshold=no_speech,
+            no_speech_threshold=0.6,
             suppress_blank=True,
         )
         parts = [seg.text.strip() for seg in segments if seg.text.strip()]
@@ -395,27 +541,15 @@ class LiteSpeechToText:
 
     def _start_recording(self) -> None:
         """Avvia registrazione audio."""
-        if self.is_recording:
+        if self.is_recording or self._processing:
             return
-        try:
-            self.p = pyaudio.PyAudio()
-            self.stream = self.p.open(
-                format=AUDIO_FORMAT,
-                channels=AUDIO_CHANNELS,
-                rate=AUDIO_RATE,
-                input=True,
-                frames_per_buffer=AUDIO_CHUNK,
-            )
-            self.is_recording = True
-            self.audio_frames = []
-            self.start_time = time.time()
-            log.info("\nRegistrazione... (rilascia CTRL)")
+        self.is_recording = True
+        self.audio_frames = []
+        self.start_time = time.time()
+        log.info("\nRegistrazione... (rilascia CTRL)")
 
-            thread = threading.Thread(target=self._record_loop, daemon=True)
-            thread.start()
-        except OSError as e:
-            log.error("Errore registrazione: %s", e)
-            self.is_recording = False
+        thread = threading.Thread(target=self._record_loop, daemon=True)
+        thread.start()
 
     def _record_loop(self) -> None:
         """Loop di cattura audio in thread separato."""
@@ -428,14 +562,32 @@ class LiteSpeechToText:
                 break
 
     def _stop_recording(self) -> None:
-        """Ferma registrazione ed elabora l'audio."""
+        """Ferma registrazione e avvia elaborazione in thread separato."""
         if not self.is_recording:
             return
 
         self.is_recording = False
         duration = time.time() - self.start_time
-        self._close_audio()
 
+        thread = threading.Thread(
+            target=self._process_audio,
+            args=(list(self.audio_frames), duration),
+            daemon=True,
+        )
+        thread.start()
+
+    def _process_audio(self, frames: list[bytes], duration: float) -> None:
+        """Elabora audio in thread separato (non blocca il keyboard hook)."""
+        self._processing = True
+        try:
+            self._process_audio_inner(frames, duration)
+        finally:
+            self._processing = False
+
+    def _process_audio_inner(
+        self, frames: list[bytes], duration: float
+    ) -> None:
+        """Logica di elaborazione audio."""
         log.info("\nElaborazione...")
 
         if duration < MIN_RECORDING_DURATION:
@@ -443,7 +595,7 @@ class LiteSpeechToText:
             log.info("\nPronto")
             return
 
-        if not self.audio_frames:
+        if not frames:
             log.info("Nessun audio registrato")
             log.info("\nPronto")
             return
@@ -451,7 +603,7 @@ class LiteSpeechToText:
         total_start = time.perf_counter()
 
         try:
-            audio_data = b"".join(self.audio_frames)
+            audio_data = b"".join(frames)
             audio_np = np.frombuffer(audio_data, dtype=np.int16)
             audio_float = audio_np.astype(np.float32, copy=False) / 32768.0
 
@@ -469,12 +621,20 @@ class LiteSpeechToText:
 
                 with timer("Output"):
                     pyperclip.copy(text_clean)
-                    ctrl = keyboard.Key.ctrl_l
-                    v_key = keyboard.KeyCode.from_char("v")
-                    self.keyboard_controller.press(ctrl)
-                    self.keyboard_controller.press(v_key)
-                    self.keyboard_controller.release(v_key)
-                    self.keyboard_controller.release(ctrl)
+                    self._pasting = True
+                    try:
+                        ctrl = keyboard.Key.ctrl_l
+                        v_key = keyboard.KeyCode.from_char("v")
+                        self.keyboard_controller.press(ctrl)
+                        self.keyboard_controller.press(v_key)
+                        self.keyboard_controller.release(v_key)
+                        self.keyboard_controller.release(ctrl)
+                        time.sleep(0.05)
+                        self.keyboard_controller.press(keyboard.Key.enter)
+                        self.keyboard_controller.release(keyboard.Key.enter)
+                        time.sleep(0.05)
+                    finally:
+                        self._pasting = False
                     log.info("Incollato!")
             else:
                 log.info("Nessun testo rilevato")
@@ -517,22 +677,26 @@ class LiteSpeechToText:
 
     def _on_key_press(self, key) -> bool | None:
         """Handler pressione tasti."""
+        if self._pasting:
+            return True
         try:
             if key == keyboard.Key.ctrl_l:
                 self._start_recording()
             elif key == keyboard.Key.esc:
                 return self._on_esc()
-        except AttributeError:
-            pass
+        except Exception as e:
+            log.error("Errore key_press: %s", e)
         return True
 
     def _on_key_release(self, key) -> bool | None:
         """Handler rilascio tasti."""
+        if self._pasting:
+            return True
         try:
             if key == keyboard.Key.ctrl_l:
                 self._stop_recording()
-        except AttributeError:
-            pass
+        except Exception as e:
+            log.error("Errore key_release: %s", e)
         return True
 
     def run(self) -> None:

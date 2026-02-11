@@ -9,12 +9,9 @@ build/
 .venv/
 .conda/
 
-# Modelli Vosk (l'utente li scarica separatamente)
+# Modelli (scaricati dall'utente, non versionati)
+models/
 vosk-model-*/
-
-# Modelli Whisper cache
-*.bin
-*.pt
 
 # PyInstaller
 *.manifest
